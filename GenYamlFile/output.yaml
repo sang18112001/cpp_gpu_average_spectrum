@@ -1,0 +1,25 @@
+quang_dien_tu:
+  - id: 1
+    name: Cảm biến ánh sáng34321
+    properties:
+      range: 0-1000 lux
+      manufacturer: Company A
+  - id: 2
+    name: Điện trở quang
+    properties:
+      resistance: 10k ohm
+      type: Photoresistor
+      manufacturer: Company B
+sensor_config:
+  temperature:
+    min: -40
+    max: 125
+    unit: Celsius
+  voltage:
+    min: 0
+    max: 5
+    unit: Volts
+system_info:
+  version: 1.0.0
+  developer: John Doe
+  release_date: 2024-12-24
