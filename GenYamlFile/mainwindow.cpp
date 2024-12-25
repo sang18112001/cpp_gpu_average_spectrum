@@ -55,11 +55,14 @@ bool isLeafNode(QTreeWidgetItem *item)
     return item->childCount() == 0; // A leaf node has no children
 }
 
-bool isSequenceNode(QTreeWidgetItem *item)
-{
-    // Check if the item represents a sequence (e.g., array)
+bool isSequenceNode(QTreeWidgetItem *item) {
     for (int i = 0; i < item->childCount(); ++i) {
-        if (item->child(i)->text(0).startsWith("Item")) {
+        QTreeWidgetItem *childItem = item->child(i);
+        QString childKey = childItem->text(0);
+        QString childValue = childItem->text(1);
+
+        // Check if the child has a key "name" or "id" matching the parent's key
+        if ((childKey == "name" || childKey == "id") && childValue == item->text(0)) {
             return true;
         }
     }
@@ -92,14 +95,30 @@ void MainWindow::addYamlNodeToTree(const YAML::Node &node, QTreeWidgetItem *pare
         }
     } else if (node.IsSequence()) {
         for (std::size_t i = 0; i < node.size(); ++i) {
-            QString key = QString("Item %1").arg(i);
+            const YAML::Node &childNode = node[i];
+
+            // Lấy giá trị của "id" hoặc "name" nếu tồn tại
+            QString key;
+            if (childNode.IsMap()) {
+                if (childNode["id"]) {
+                    key = QString::fromStdString(childNode["id"].as<std::string>());
+                } else if (childNode["name"]) {
+                    key = QString::fromStdString(childNode["name"].as<std::string>());
+                }
+            }
+
+            // Nếu không có "id" hoặc "name", đặt key mặc định là "Item {index}"
+            if (key.isEmpty()) {
+                key = QString("Item %1").arg(i);
+            }
+
             QTreeWidgetItem *item = parentItem ? new QTreeWidgetItem(parentItem) : new QTreeWidgetItem(treeWidget);
             item->setText(0, key);
 
-            if (node[i].IsScalar()) {
-                item->setText(1, QString::fromStdString(node[i].as<std::string>()));
+            if (childNode.IsScalar()) {
+                item->setText(1, QString::fromStdString(childNode.as<std::string>()));
             } else {
-                addYamlNodeToTree(node[i], item);
+                addYamlNodeToTree(childNode, item);
             }
         }
     }
@@ -112,10 +131,8 @@ void MainWindow::showContextMenu(const QPoint &pos)
 
     QMenu contextMenu(this);
 
-    // Thêm nút Delete cho các item trong sequence
-    if (item->text(0).startsWith("Item") &&
-        item->parent() &&
-        isSequenceNode(item->parent())) {
+    // Xóa phần tử trong sequence
+    if (item->parent() && isSequenceNode(item->parent())) {
         QAction *deleteAction = contextMenu.addAction("Delete");
         connect(deleteAction, &QAction::triggered, this, [this, item]() {
             deleteSequenceItem(item);
@@ -139,6 +156,7 @@ void MainWindow::showContextMenu(const QPoint &pos)
     contextMenu.exec(treeWidget->mapToGlobal(pos));
 }
 
+
 void MainWindow::deleteSequenceItem(QTreeWidgetItem *item)
 {
     if (!item || !item->parent()) return;
@@ -151,15 +169,10 @@ void MainWindow::deleteSequenceItem(QTreeWidgetItem *item)
         );
 
     if (reply == QMessageBox::Yes) {
-        // Lấy parent để cập nhật lại số thứ tự sau khi xóa
+        // Lấy parent để cập nhật lại các child sau khi xóa
         QTreeWidgetItem *parent = item->parent();
         int removedIndex = parent->indexOfChild(item);
         delete item;
-
-        // Cập nhật lại số thứ tự của các items còn lại
-        for (int i = removedIndex; i < parent->childCount(); i++) {
-            parent->child(i)->setText(0, QString("Item %1").arg(i));
-        }
     }
 }
 
@@ -169,6 +182,7 @@ void MainWindow::editLeafValue(QTreeWidgetItem *item)
 
     bool ok;
     QString currentValue = item->text(1);
+    qDebug() << item->text(0);
     QString newValue = QInputDialog::getText(this, "Edit Value", "Enter new value:", QLineEdit::Normal, currentValue, &ok);
 
     if (ok && !newValue.isEmpty()) {
@@ -180,79 +194,62 @@ void MainWindow::editSequenceNode(QTreeWidgetItem *item)
 {
     if (!item) return;
 
-    // Get structure from first child if exists
-    QMap<QString, QTreeWidgetItem*> structure;
+    // Collect fields for the new object
+    QMap<QString, QString> fieldMap;
     if (item->childCount() > 0) {
-        mapStructure(item->child(0), structure, "/");
-    }
-
-    QDialog dialog(this);
-    dialog.setWindowTitle("Edit Sequence");
-    QVBoxLayout *mainLayout = new QVBoxLayout(&dialog);
-    QScrollArea *scrollArea = new QScrollArea(&dialog);
-    QWidget *scrollContent = new QWidget;
-    QVBoxLayout *contentLayout = new QVBoxLayout(scrollContent);
-
-    // Map to store all input fields
-    QMap<QString, QWidget*> inputFields;
-
-    // Create inputs based on structure
-    for (auto it = structure.begin(); it != structure.end(); ++it) {
-        QString path = it.key();
-        QTreeWidgetItem* structureItem = it.value();
-
-        if (structureItem->childCount() > 0) {
-            // Create group for nested structure
-            QGroupBox *group = new QGroupBox(path, &dialog);
-            QFormLayout *groupLayout = new QFormLayout(group);
-
-            // Create fields for children
-            for (int i = 0; i < structureItem->childCount(); i++) {
-                QTreeWidgetItem* child = structureItem->child(i);
-                QString childPath = path + "/" + child->text(0);
-                QLineEdit *input = new QLineEdit(group);
-                groupLayout->addRow(child->text(0), input);
-                inputFields[childPath] = input;
-            }
-
-            contentLayout->addWidget(group);
-        } else {
-            // Create field for leaf node
-            QLineEdit *input = new QLineEdit(scrollContent);
-            QFormLayout *fieldLayout = new QFormLayout;
-            fieldLayout->addRow(path, input);
-            contentLayout->addLayout(fieldLayout);
-            inputFields[path] = input;
+        QTreeWidgetItem *firstChild = item->child(0);
+        for (int i = 0; i < firstChild->childCount(); ++i) {
+            QTreeWidgetItem *fieldItem = firstChild->child(i);
+            fieldMap[fieldItem->text(0)] = ""; // Initialize fields with empty values
         }
     }
 
-    scrollArea->setWidget(scrollContent);
-    scrollArea->setWidgetResizable(true);
-    mainLayout->addWidget(scrollArea);
+    // Create a dialog for editing sequence
+    QDialog dialog(this);
+    dialog.setWindowTitle("Edit Sequence");
+    QVBoxLayout *dialogLayout = new QVBoxLayout(&dialog);
 
-    QDialogButtonBox *buttonBox = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-        Qt::Horizontal,
-        &dialog
-        );
+    QTableWidget *tableWidget = new QTableWidget(fieldMap.size(), 2, &dialog);
+    tableWidget->setHorizontalHeaderLabels(QStringList() << "Key" << "Value");
+    tableWidget->horizontalHeader()->setStretchLastSection(true);
+    tableWidget->verticalHeader()->setVisible(false);
+    tableWidget->setEditTriggers(QAbstractItemView::AllEditTriggers);
+
+    int row = 0;
+    for (auto it = fieldMap.begin(); it != fieldMap.end(); ++it, ++row) {
+        QTableWidgetItem *keyItem = new QTableWidgetItem(it.key());
+        keyItem->setFlags(keyItem->flags() & ~Qt::ItemIsEditable); // Make key column read-only
+        tableWidget->setItem(row, 0, keyItem);
+
+        QTableWidgetItem *valueItem = new QTableWidgetItem(it.value());
+        tableWidget->setItem(row, 1, valueItem);
+    }
+
+    dialogLayout->addWidget(tableWidget);
+
+    QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    mainLayout->addWidget(buttonBox);
+    dialogLayout->addWidget(buttonBox);
 
     if (dialog.exec() == QDialog::Accepted) {
+        // Collect values entered by the user
+        QMap<QString, QString> newFields;
+        for (int i = 0; i < tableWidget->rowCount(); ++i) {
+            QString key = tableWidget->item(i, 0)->text();
+            QString value = tableWidget->item(i, 1)->text();
+            if (!value.isEmpty()) {
+                newFields[key] = value;
+            }
+        }
+
+        // Add new object to the sequence
         QTreeWidgetItem *newItem = new QTreeWidgetItem(item);
         newItem->setText(0, QString("Item %1").arg(item->childCount() - 1));
-
-        // Create tree structure based on input values
-        for (auto it = structure.begin(); it != structure.end(); ++it) {
-            QString path = it.key();
-            QWidget *input = inputFields[path];
-
-            if (QLineEdit *lineEdit = qobject_cast<QLineEdit*>(input)) {
-                if (!lineEdit->text().isEmpty()) {
-                    createTreePath(newItem, path, lineEdit->text());
-                }
-            }
+        for (auto it = newFields.begin(); it != newFields.end(); ++it) {
+            QTreeWidgetItem *fieldItem = new QTreeWidgetItem(newItem);
+            fieldItem->setText(0, it.key());
+            fieldItem->setText(1, it.value());
         }
     }
 }
@@ -327,8 +324,17 @@ void MainWindow::addTreeNodeToYaml(QTreeWidgetItem *item, YAML::Node &parentNode
 {
     QString key = item->text(0);
     QString value = item->text(1);
-
-    if (key.startsWith("Item")) { // Handle sequence
+    bool isSequence = false;
+    for (int i = 0; i < item->childCount(); ++i) {
+        QTreeWidgetItem *childItem = item->child(i);
+        QString childKey = childItem->text(0);
+        QString childValue = childItem->text(1);
+        if (key == childValue && (childKey == "name" || childKey == "id")) {
+            isSequence = true;
+            break;
+        }
+    }
+    if (key == "localhost" || key == "station" || key == "127.0.0.1" ) { // Handle sequence
         YAML::Node subNode;
         for (int i = 0; i < item->childCount(); ++i) {
             QTreeWidgetItem *childItem = item->child(i);
